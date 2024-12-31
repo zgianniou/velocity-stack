@@ -7,6 +7,9 @@ This repository provides the code and documentation for an **adjustable velocity
 - **Dynamic Stack Adjustment**: Actuates the velocity stack length based on RPM to optimize airflow and enhance torque at various engine speeds.
 - **Debouncing Logic**: Filters signal noise for accurate RPM detection.
 - **User-Controlled Modes**: Supports configurable modes to adapt the velocity stack operation for different use cases.
+- **Wi-Fi Control and Monitoring**: Includes a web-based app to remotely control the microcontroller and view real-time RPM and stack position data.
+- **User-Controlled Modes**: Supports configurable modes to adapt the velocity stack operation for different use cases.
+
 
 ## 🛠️ Hardware Requirements
 - **Microcontroller**: ESP32 or compatible microcontroller with sufficient GPIO pins.
@@ -29,6 +32,13 @@ This repository provides the code and documentation for an **adjustable velocity
 3. **Debounce Logic**:
    - Ensures accurate edge detection by filtering out noise and spurious signals.
 
+4. **Wi-Fi Control App**:
+  - ESP32 creates its own Wi-Fi network for direct connection.
+  - Through the web-based app:
+     - View real-time RPM data.
+     - Manually override the velocity stack position.
+     - Toggle automatic or manual control modes.
+
 ## ⚙️ Setup Instructions
 1. **Hardware Connections**:
    - Connect the crankshaft position sensor to the microcontroller's interrupt pin.
@@ -44,8 +54,9 @@ This repository provides the code and documentation for an **adjustable velocity
    - Open the `src` folder in the Arduino IDE or PlatformIO.
    - Upload the code to the ESP32.
 
-3. **Testing**:
-   - Use the onboard serial monitor to verify RPM measurements and actuator movements.
+3. **Wi-Fi App Setup**:
+  
+   
 
 ## 📊 Performance Testing
 - Include data visualizations or torque-RPM curves showing the effect of the adjustable velocity stack.
