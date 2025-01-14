@@ -2,6 +2,9 @@
 #include <WebServer.h>
 #include <EEPROM.h>
 #include <ArduinoJson.h>  // Include the ArduinoJson library
+#include "nvs_flash.h"
+#include "nvs.h"
+
 
 // Access Point credentials
 const char* ssid = "ESP8266_AP";
@@ -11,6 +14,7 @@ const char* password = "12345678";
 WebServer server(80);
 
 // Pin configuration
+#define LED_PIN 10
 const int analogPin = 0;      // ADC pin
 const int interruptPin = 18;  // Digital GPIO pin for signal detection
 const int buttonPin = 5;      // GPIO pin for the button
@@ -26,7 +30,7 @@ unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
 // Default mode ranges (to be updated via JSON)
-float modeRanges[4][2] = {
+int32_t modeRanges[4][2] = {
   { 0, 3000 },     // Mode 1 range
   { 3000, 5000 },  // Mode 2 range
   { 5000, 8000 },  // Mode 3 range
@@ -81,7 +85,7 @@ void handleData() {
   jsonData += "\"system_status\":" + String(functionStatus);  // Send system status
   jsonData += "}";
 
-  Serial.println("Sending RPM and mode: " + jsonData);
+  // Serial.println("Sending RPM and mode: " + jsonData);
   server.send(200, "application/json", jsonData);
 }
 
@@ -132,9 +136,72 @@ void handleSaveRanges() {
         Serial.println("Invalid range: start should be less than end.");
       }
     }
-
+    store_data_rpm(modeRanges);
     server.send(200, "text/plain", "Ranges saved successfully");
+
   }
+}
+
+void app_main() {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+    // Now NVS is ready for use
+}
+
+void store_data_rpm(int32_t value[4][2]) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 2; j++) {
+                char key[16];
+                sprintf(key, "key_%d_%d", i, j);
+                nvs_set_i32(handle, key, value[i][j]);
+            }
+        }
+        if (err != ESP_OK) {
+        Serial.println("Failed to commit NVS!");
+    } else {
+        Serial.println("Data stored successfully!");
+    }
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+void read_data_rpm() {
+  int32_t value[4][2];  // Declare the 2D array to store the values
+
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &handle);
+    if (err == ESP_OK) {
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 2; j++) {
+                char key[16];
+                sprintf(key, "key_%d_%d", i, j);
+                nvs_get_i32(handle, key, &value[i][j]);
+                if (err == ESP_OK) {
+                  modeRanges[i][j] = value[i][j];
+                Serial.print("Read key: ");
+                Serial.print(key);
+                Serial.print(" = ");
+                Serial.println(value[i][j]);
+            } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+                Serial.print("Key not found: ");
+                Serial.println(key);
+            } else {
+                Serial.print("Error reading key: ");
+                Serial.println(key);
+            }
+            }
+            
+        }
+        nvs_close(handle);
+    }
 }
 
 void setup() {
@@ -161,11 +228,17 @@ void setup() {
   // Configure pins and interrupts
 
   pinMode(buttonPin, INPUT_PULLUP);
+
+
+  // Configure NVS
+  app_main();
+  read_data_rpm();
 }
 
 void loop() {
   static bool lastButtonState = HIGH;
   bool currentButtonState = digitalRead(buttonPin);
+ 
 
   // Debounce button input
   if (currentButtonState != lastButtonState) {
@@ -175,6 +248,16 @@ void loop() {
         functionStatus = !functionStatus;
         Serial.print("Button pressed - Current status: ");
         Serial.println(functionStatus ? "ON" : "OFF");
+        for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 2; j++) {
+            Serial.print("modeRanges[");
+            Serial.print(i);
+            Serial.print("][");
+            Serial.print(j);
+            Serial.print("]: ");
+            Serial.println(modeRanges[i][j]);
+        }
+    }
       }
     }
   }
