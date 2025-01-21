@@ -29,6 +29,9 @@ bool functionStatus = true;       // Toggle status (ON/OFF)
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
+bool testCheck = false;  // Flag to determine if test_result should be sent
+bool syncStatus = false; // Flag to determine if ranges from esp32 to app should be sent
+
 // Default mode ranges (to be updated via JSON)
 int32_t modeRanges[4][2] = {
   { 0, 3000 },     // Mode 1 range
@@ -69,31 +72,46 @@ int determineMode(float rpm) {
   return 0;  // Default case
 }
 
-// HTTP handler to send current RPM
-void handlePosition() {
-  String position = String(rpm);
-  // Serial.println("Sending current position: " + position);
-  server.send(200, "text/plain", position);
-}
+// HTTP handler to send RPM data
+void handleRPMData() {
+  DynamicJsonDocument doc(256);
 
-// HTTP handler to send RPM and mode together
-void handleData() {
-  int mode = determineMode(rpm);
-  String jsonData = "{";
-  jsonData += "\"rpm\":" + String(rpm) + ",";                 // Send RPM value
-  jsonData += "\"mode\":" + String(mode) + ",";               // Send Mode value
-  jsonData += "\"system_status\":" + String(functionStatus);  // Send system status
-  jsonData += "}";
+  // Send RPM value
+  doc["rpm"] = rpm;
 
-  // Serial.println("Sending RPM and mode: " + jsonData);
+  String jsonData;
+  serializeJson(doc, jsonData);
+  Serial.println("Sending RPM data: " + jsonData);
   server.send(200, "application/json", jsonData);
 }
 
-// HTTP handler to receive and process the JSON data
-void handleSaveRanges() {
+// HTTP handler to send test result (if test_check is true)
+void handleTestResult() {
+  DynamicJsonDocument doc(256);
+
+  // Sending mode_path as an array
+  //it sends a default array value which is [1,2,3,4,3,2,1]
+  //should change it when we make the mechanical parts
+  JsonArray modePath = doc.createNestedArray("mode_path");
+  modePath.add(1);
+  modePath.add(2);
+  modePath.add(3);
+  modePath.add(4);
+  modePath.add(3);
+  modePath.add(2);
+  modePath.add(1);
+
+  String jsonData;
+  serializeJson(doc, jsonData);
+  Serial.println("Sending mode path: " + jsonData);
+  server.send(200, "application/json", jsonData);
+}
+
+// HTTP handler to get a boolean value called "test_check"
+void handleTestCheck() {
   if (server.method() == HTTP_POST) {
-    String jsonData = server.arg("plain");              // Get raw JSON data from the request
-    Serial.println("Received JSON data: " + jsonData);  // Log the received JSON data
+    String jsonData = server.arg("plain");
+    Serial.println("Received JSON data for test_check: " + jsonData);
 
     // Parse the JSON data
     DynamicJsonDocument doc(1024);
@@ -102,43 +120,98 @@ void handleSaveRanges() {
     if (error) {
       Serial.println("Failed to parse JSON");
       server.send(400, "text/plain", "Invalid JSON");
-      delay(1000);
       return;
     }
 
-    // Example: Read values from JSON (you can expand this based on your actual JSON structure)
-    JsonArray ranges = doc["ranges"].as<JsonArray>();  // Assuming JSON contains "ranges" as an array
-    Serial.println("Received Ranges:");                // Log the received ranges
+    // Check for test_check and update the flag
+    if (doc.containsKey("test_check")) {
+      testCheck = doc["test_check"];
+      Serial.print("Received test_check: ");
+      Serial.println(testCheck);
+    }
 
-    // Validate and update mode ranges based on received JSON
-    for (int i = 0; i < ranges.size() && i < 4; i++) {
-      float start = ranges[i]["start"];
-      float end = ranges[i]["end"];
+    server.send(200, "text/plain", "Test check updated successfully");
+  }
+}
 
-      // Log the received start and end values
-      Serial.print("Range ");
-      Serial.print(i + 1);
-      Serial.print(": Start = ");
-      Serial.print(start);
-      Serial.print(", End = ");
-      Serial.println(end);
+// HTTP handler to update mode ranges
+void handleRanges() {
+  if (server.method() == HTTP_POST) {
+    String jsonData = server.arg("plain");
+    Serial.println("Received JSON data for ranges: " + jsonData);
 
-      if (start < end) {
-        modeRanges[i][0] = start;
-        modeRanges[i][1] = end;
-        Serial.print("Updated Range for Mode ");
-        Serial.print(i + 1);
-        Serial.print(": ");
-        Serial.print(start);
-        Serial.print(" - ");
-        Serial.println(end);
+    // Parse the JSON data
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, jsonData);
+
+    if (error) {
+      Serial.println("Failed to parse JSON");
+      server.send(400, "text/plain", "Invalid JSON");
+      return;
+    }
+
+    // Update mode ranges if present
+    if (doc.containsKey("ranges")) {
+      JsonArray ranges = doc["ranges"].as<JsonArray>();
+
+      // Ensure the array has at least 5 values (the 5 range points)
+      if (ranges.size() == 5) {
+        for (int i = 0; i < ranges.size(); i++) {
+          float rangeValue = ranges[i];
+          Serial.printf("Received range value: %.2f\n", rangeValue);
+
+          // Assign values to modeRanges
+          if (i < 4) {
+            modeRanges[i][0] = rangeValue; // Store range in modeRanges
+            modeRanges[i][1] = (i + 1 < ranges.size()) ? ranges[i + 1] : rangeValue;  // Set the next range as the upper bound
+            Serial.printf("Updated Range for Mode %d: %.2f - %.2f\n", i + 1, modeRanges[i][0], modeRanges[i][1]);
+          }
+        }
       } else {
-        Serial.println("Invalid range: start should be less than end.");
+        Serial.println("Invalid number of range values");
+        server.send(400, "text/plain", "Invalid number of range values");
+        return;
       }
     }
-    store_data_rpm(modeRanges);
-    server.send(200, "text/plain", "Ranges saved successfully");
 
+    server.send(200, "text/plain", "Ranges updated successfully");
+  }
+}
+
+// HTTP handler to sync status (boolean)
+void handleSync() {
+  if (server.method() == HTTP_POST) {
+    DynamicJsonDocument doc(256);
+
+    // Send sync status as a boolean
+    doc["sync"] = syncStatus;
+
+    String jsonData;
+    serializeJson(doc, jsonData);
+    Serial.println("Sending sync status: " + jsonData);
+    server.send(200, "application/json", jsonData);
+  }
+}
+
+// HTTP handler to send RPM ranges
+void handleSendRanges() {
+  if (server.method() == HTTP_GET) {
+    DynamicJsonDocument doc(256);
+
+    // Send RPM ranges
+    JsonArray ranges = doc.createNestedArray("ranges");
+    for (int i = 0; i < 4; i++) {
+      ranges.add(modeRanges[i][0]);
+      if(i== 3){
+        ranges.add(modeRanges[i][1]);
+  
+      }
+    }
+
+    String jsonData;
+    serializeJson(doc, jsonData);
+    Serial.println("Sending RPM ranges: " + jsonData);
+    server.send(200, "application/json", jsonData);
   }
 }
 
@@ -219,9 +292,12 @@ void setup() {
   Serial.println("AP IP address: " + IP.toString());
 
   // Configure HTTP routes
-  server.on("/position", HTTP_GET, handlePosition);        // Send RPM position only
-  server.on("/data", HTTP_GET, handleData);                // Send both RPM and mode as JSON
-  server.on("/save_ranges", HTTP_POST, handleSaveRanges);  // Route to save ranges
+  server.on("/data", HTTP_GET, handleRPMData);          // Send RPM data
+  server.on("/test_result", HTTP_GET, handleTestResult);  // Send Test Results
+  server.on("/save_test_check", HTTP_POST, handleTestCheck); // Receive test_check flag as boolean value
+  server.on("/save_ranges", HTTP_POST, handleRanges); // Receive ranges for modes
+  server.on("/sync", HTTP_POST, handleSync); // Send sync status (boolean)
+  server.on("/ranges", HTTP_GET, handleSendRanges); // Send RPM ranges
   server.begin();
   Serial.println("HTTP server started");
 
@@ -285,7 +361,7 @@ void loop() {
     }
   }
     // rpm = random(0, 2000);  // Generate a random RPM value between 0 and 14000
-    handlePosition();
+    handleRPMData();
 
   delay(50);
 }
