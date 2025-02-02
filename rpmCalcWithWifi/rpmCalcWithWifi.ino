@@ -5,7 +5,6 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 
-
 // Access Point credentials
 const char* ssid = "ESP8266_AP";
 const char* password = "12345678";
@@ -14,7 +13,7 @@ const char* password = "12345678";
 WebServer server(80);
 
 // Pin configuration
-#define LED_PIN 10
+#define LED_PIN 8
 const int analogPin = 0;      // ADC pin
 const int interruptPin = 18;  // Digital GPIO pin for signal detection
 const int buttonPin = 5;      // GPIO pin for the button
@@ -33,12 +32,8 @@ bool testCheck = false;  // Flag to determine if test_result should be sent
 bool syncStatus = false; // Flag to determine if ranges from esp32 to app should be sent
 
 // Default mode ranges (to be updated via JSON)
-int32_t modeRanges[4][2] = {
-  { 0, 3000 },     // Mode 1 range
-  { 3000, 5000 },  // Mode 2 range
-  { 5000, 8000 },  // Mode 3 range
-  { 8000, 14000 }  // Mode 4 range
-};
+int32_t *modeRanges = nullptr;  // Dynamic array for mode ranges
+int numRanges = 0;              // Number of ranges
 
 // Interrupt Service Routine
 void IRAM_ATTR onRise() {
@@ -64,9 +59,9 @@ void IRAM_ATTR onRise() {
 
 // Determine mode based on RPM and dynamic modeRanges
 int determineMode(float rpm) {
-  for (int i = 0; i < 4; i++) {
-    if (rpm >= modeRanges[i][0] && rpm < modeRanges[i][1]) {
-      return i + 1;  // Mode 1 to Mode 4
+  for (int i = 0; i < numRanges - 1; i++) {
+    if (rpm >= modeRanges[i] && rpm < modeRanges[i + 1]) {
+      return i + 1;  // Mode 1 to Mode N
     }
   }
   return 0;  // Default case
@@ -90,8 +85,6 @@ void handleTestResult() {
   DynamicJsonDocument doc(256);
 
   // Sending mode_path as an array
-  //it sends a default array value which is [1,2,3,4,3,2,1]
-  //should change it when we make the mechanical parts
   JsonArray modePath = doc.createNestedArray("mode_path");
   modePath.add(1);
   modePath.add(2);
@@ -154,27 +147,32 @@ void handleRanges() {
     if (doc.containsKey("ranges")) {
       JsonArray ranges = doc["ranges"].as<JsonArray>();
 
-      // Ensure the array has at least 5 values (the 5 range points)
-      if (ranges.size() == 5) {
-        for (int i = 0; i < ranges.size(); i++) {
-          float rangeValue = ranges[i];
-          Serial.printf("Received range value: %.2f\n", rangeValue);
-
-          // Assign values to modeRanges
-          if (i < 4) {
-            modeRanges[i][0] = rangeValue; // Store range in modeRanges
-            modeRanges[i][1] = (i + 1 < ranges.size()) ? ranges[i + 1] : rangeValue;  // Set the next range as the upper bound
-            Serial.printf("Updated Range for Mode %d: %.2f - %.2f\n", i + 1, modeRanges[i][0], modeRanges[i][1]);
-          }
-        }
-      } else {
-        Serial.println("Invalid number of range values");
-        server.send(400, "text/plain", "Invalid number of range values");
+      // Ensure the first value is 0 and the last is 14000
+      if (ranges[0] != 0 || ranges[ranges.size() - 1] != 14000) {
+        Serial.println("Invalid ranges: First value must be 0 and last value must be 14000");
+        server.send(400, "text/plain", "Invalid ranges: First value must be 0 and last value must be 14000");
         return;
       }
-    }
 
-    server.send(200, "text/plain", "Ranges updated successfully");
+      // Free existing modeRanges if any
+      if (modeRanges != nullptr) {
+        free(modeRanges);
+      }
+
+      // Allocate memory for new ranges
+      numRanges = ranges.size();
+      modeRanges = (int32_t *)malloc(numRanges * sizeof(int32_t));
+
+      // Copy ranges to modeRanges
+      for (int i = 0; i < numRanges; i++) {
+        modeRanges[i] = ranges[i];
+      }
+
+      // Store the ranges in NVS
+      storeRanges();
+
+      server.send(200, "text/plain", "Ranges updated successfully");
+    }
   }
 }
 
@@ -200,12 +198,8 @@ void handleSendRanges() {
 
     // Send RPM ranges
     JsonArray ranges = doc.createNestedArray("ranges");
-    for (int i = 0; i < 4; i++) {
-      ranges.add(modeRanges[i][0]);
-      if(i== 3){
-        ranges.add(modeRanges[i][1]);
-  
-      }
+    for (int i = 0; i < numRanges; i++) {
+      ranges.add(modeRanges[i]);
     }
 
     String jsonData;
@@ -224,56 +218,51 @@ void app_main() {
     // Now NVS is ready for use
 }
 
-void store_data_rpm(int32_t value[4][2]) {
+// Store ranges in NVS
+void storeRanges() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &handle);
     if (err == ESP_OK) {
-        for (int i = 0; i < 4; i++) {
-            for (int j = 0; j < 2; j++) {
-                char key[16];
-                sprintf(key, "key_%d_%d", i, j);
-                nvs_set_i32(handle, key, value[i][j]);
-            }
+        // Store the number of ranges
+        nvs_set_i32(handle, "numRanges", numRanges);
+
+        // Store each range value
+        for (int i = 0; i < numRanges; i++) {
+            char key[16];
+            sprintf(key, "range_%d", i);
+            nvs_set_i32(handle, key, modeRanges[i]);
         }
-        if (err != ESP_OK) {
-        Serial.println("Failed to commit NVS!");
-    } else {
-        Serial.println("Data stored successfully!");
-    }
+
         nvs_commit(handle);
         nvs_close(handle);
+        Serial.println("Ranges stored successfully!");
+    } else {
+        Serial.println("Failed to store ranges!");
     }
 }
 
-void read_data_rpm() {
-  int32_t value[4][2];  // Declare the 2D array to store the values
-
-
+// Load ranges from NVS
+void loadRanges() {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("storage", NVS_READONLY, &handle);
     if (err == ESP_OK) {
-        for (int i = 0; i < 4; i++) {
-            for (int j = 0; j < 2; j++) {
-                char key[16];
-                sprintf(key, "key_%d_%d", i, j);
-                nvs_get_i32(handle, key, &value[i][j]);
-                if (err == ESP_OK) {
-                  modeRanges[i][j] = value[i][j];
-                Serial.print("Read key: ");
-                Serial.print(key);
-                Serial.print(" = ");
-                Serial.println(value[i][j]);
-            } else if (err == ESP_ERR_NVS_NOT_FOUND) {
-                Serial.print("Key not found: ");
-                Serial.println(key);
-            } else {
-                Serial.print("Error reading key: ");
-                Serial.println(key);
-            }
-            }
-            
+        // Read the number of ranges
+        nvs_get_i32(handle, "numRanges", &numRanges);
+
+        // Allocate memory for modeRanges
+        modeRanges = (int32_t *)malloc(numRanges * sizeof(int32_t));
+
+        // Read each range value
+        for (int i = 0; i < numRanges; i++) {
+            char key[16];
+            sprintf(key, "range_%d", i);
+            nvs_get_i32(handle, key, &modeRanges[i]);
         }
+
         nvs_close(handle);
+        Serial.println("Ranges loaded successfully!");
+    } else {
+        Serial.println("Failed to load ranges!");
     }
 }
 
@@ -282,7 +271,6 @@ void setup() {
 
   attachInterrupt(digitalPinToInterrupt(interruptPin), onRise, RISING);
   pinMode(interruptPin, INPUT);
-
 
   // Set up Wi-Fi Access Point
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
@@ -302,19 +290,16 @@ void setup() {
   Serial.println("HTTP server started");
 
   // Configure pins and interrupts
-
   pinMode(buttonPin, INPUT_PULLUP);
-
 
   // Configure NVS
   app_main();
-  read_data_rpm();
+  loadRanges();
 }
 
 void loop() {
   static bool lastButtonState = HIGH;
   bool currentButtonState = digitalRead(buttonPin);
- 
 
   // Debounce button input
   if (currentButtonState != lastButtonState) {
@@ -324,16 +309,12 @@ void loop() {
         functionStatus = !functionStatus;
         Serial.print("Button pressed - Current status: ");
         Serial.println(functionStatus ? "ON" : "OFF");
-        for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 2; j++) {
+        for (int i = 0; i < numRanges; i++) {
             Serial.print("modeRanges[");
             Serial.print(i);
-            Serial.print("][");
-            Serial.print(j);
             Serial.print("]: ");
-            Serial.println(modeRanges[i][j]);
+            Serial.println(modeRanges[i]);
         }
-    }
       }
     }
   }
@@ -349,7 +330,6 @@ void loop() {
       freq = 1000000.0 / period ;  // Frequency in Hz
       rpm = (freq * 120) / 36;  // Calculate RPM
 
-
       Serial.print("Frequency: ");
       Serial.println(freq);
       Serial.print("RPM: ");
@@ -360,8 +340,6 @@ void loop() {
       Serial.println(mode);
     }
   }
-    // rpm = random(0, 2000);  // Generate a random RPM value between 0 and 14000
-    handleRPMData();
 
   delay(50);
 }
