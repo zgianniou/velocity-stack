@@ -13,7 +13,6 @@ const char* password = "12345678";
 WebServer server(80);
 
 // Pin configuration
-#define LED_PIN 8
 const int analogPin = 0;      // ADC pin
 const int interruptPin = 18;  // Digital GPIO pin for signal detection
 const int buttonPin = 5;      // GPIO pin for the button
@@ -29,13 +28,20 @@ unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
 // Mode ranges storage
-const int MAX_RANGES 10
+const int MAX_RANGES=12
 const int INITIAL_RANGES = 4;
-int32_t modeRanges[MAX_RANGES] = {0,3000, 7000,10000,14000};  // Default values
+
+float modeRanges[INITIAL_RANGES][2] = {
+  {0,3000},
+  {3001, 5000}
+  {5001, 8000}
+  {8001, 14000}
+};
+
 int numRanges = INITIAL_RANGES;
 
-//bool testCheck = false;  
-//bool syncStatus = false; 
+bool testCheck = false;  
+bool syncStatus = false; 
 
 // Interrupt Service Routine
 void IRAM_ATTR onRise() {
@@ -60,57 +66,12 @@ void IRAM_ATTR onRise() {
 }
 
 int determineMode(float rpm) {
-    for (int i = 0; i < numRanges - 1; i++) {
-        if (rpm >= modeRanges[i] && rpm < modeRanges[i + 1]) return i + 1;
-    }
-    return 0;
-}
-
-void handleRPMData() {
-    DynamicJsonDocument doc(256);
-    doc["rpm"] = rpm;
-    String jsonData;
-    serializeJson(doc, jsonData);
-    server.send(200, "application/json", jsonData);
-}
-
-
-void handleRanges() {
-    if (server.method() == HTTP_POST) {
-        String jsonData = server.arg("plain");
-        DynamicJsonDocument doc(512);
-        if (deserializeJson(doc, jsonData)) {
-            server.send(400, "text/plain", "Invalid JSON");
-            return;
-        }
-        if (doc.containsKey("ranges")) {
-            JsonArray ranges = doc["ranges"].as<JsonArray>();
-            if (ranges.size() < 4 || ranges.size() > MAX_RANGES) {
-                server.send(400, "text/plain", "Invalid range size (min 4, max 12)");
-                return;
-            }
-            numRanges = ranges.size();
-            modeRanges[0] = 0;
-            modeRanges[numRanges - 1] = 14000;
-            for (int i = 1; i < numRanges - 1; i++) modeRanges[i] = ranges[i];
-            storeRanges();
-            server.send(200, "text/plain", "Ranges updated successfully");
+    for (int i = 0; i < numRanges; i++) { // Use dynamic numRanges instead of fixed 4
+        if (rpm >= modeRanges[i][0] && rpm < modeRanges[i][1]) {
+            return i + 1; // Mode 1 to Mode N
         }
     }
-}
-
-
-void handleSendRanges() {
-    if (server.method() == HTTP_GET) {
-        DynamicJsonDocument doc(256);
-        JsonArray ranges = doc.createNestedArray("ranges");
-        for (int i = 0; i < numRanges; i++) {
-            ranges.add(modeRanges[i]);
-        }
-        String jsonData;
-        serializeJson(doc, jsonData);
-        server.send(200, "application/json", jsonData);
-    }
+    return 0; // Default case (out of range)
 }
 
 void storeRanges() {
@@ -119,8 +80,11 @@ void storeRanges() {
         nvs_set_i32(handle, "numRanges", numRanges);
         for (int i = 0; i < numRanges; i++) {
             char key[16];
-            sprintf(key, "range_%d", i);
-            nvs_set_i32(handle, key, modeRanges[i]);
+            sprintf(key, "range_%d_0", i);
+            nvs_set_f32(handle, key, modeRanges[i][0]);
+
+            sprintf(key, "range_%d_1", i);
+            nvs_set_f32(handle, key, modeRanges[i][1]);
         }
         nvs_commit(handle);
         nvs_close(handle);
@@ -131,21 +95,88 @@ void loadRanges() {
     nvs_handle_t handle;
     if (nvs_open("storage", NVS_READONLY, &handle) == ESP_OK) {
         nvs_get_i32(handle, "numRanges", &numRanges);
-        for (int i = 0; i < numRanges; i++) {
+        for (int i = 1; i < numRanges - 1; i++) {  // Load only middle ranges
             char key[16];
-            sprintf(key, "range_%d", i);
-            nvs_get_i32(handle, key, &modeRanges[i]);
+            sprintf(key, "range_%d_0", i);
+            nvs_get_f32(handle, key, &modeRanges[i][0]);
+
+            sprintf(key, "range_%d_1", i);
+            nvs_get_f32(handle, key, &modeRanges[i][1]);
         }
         nvs_close(handle);
     }
 }
 
+void handleRanges() {
+    if (server.method() == HTTP_POST) {
+        String jsonData = server.arg("plain");
+        DynamicJsonDocument doc(512);
+        if (deserializeJson(doc, jsonData)) {
+            server.send(400, "text/plain", "Invalid JSON");
+            return;
+        }
+
+        if (doc.containsKey("ranges")) {
+            JsonArray ranges = doc["ranges"].as<JsonArray>();
+            int newNumRanges = ranges.size();
+            
+            if (newNumRanges > MAX_RANGES - 2) {
+                server.send(400, "text/plain", "Too many ranges");
+                return;
+            }
+
+            modeRanges[0][0] = 0;        // Fixed start
+            modeRanges[0][1] = ranges[0];
+
+            for (int i = 1; i < newNumRanges; i++) {
+                modeRanges[i][0] = ranges[i - 1] + 1;
+                modeRanges[i][1] = ranges[i];
+            }
+
+            modeRanges[newNumRanges][0] = ranges[newNumRanges - 1] + 1;
+            modeRanges[newNumRanges][1] = 14000;  // Fixed end
+
+            numRanges = newNumRanges + 1;
+            storeRanges();
+
+            server.send(200, "text/plain", "Ranges updated successfully");
+        }
+    }
+}
+
+void handleSendRanges() {
+    DynamicJsonDocument doc(256);
+    JsonArray ranges = doc.createNestedArray("ranges");
+    for (int i = 0; i < numRanges; i++) {
+        JsonArray range = ranges.createNestedArray();
+        range.add(modeRanges[i][0]);
+        range.add(modeRanges[i][1]);
+    }
+    String jsonData;
+    serializeJson(doc, jsonData);
+    server.send(200, "application/json", jsonData);
+}
+
+// HTTP handler to send RPM data
+void handleRPMData() {
+  DynamicJsonDocument doc(256);
+
+  // Send RPM value
+  doc["rpm"] = rpm;
+
+  String jsonData;
+  serializeJson(doc, jsonData);
+  Serial.println("Sending RPM data: " + jsonData);
+  server.send(200, "application/json", jsonData);
+}
 
 // HTTP handler to send test result (if test_check is true)
 void handleTestResult() {
   DynamicJsonDocument doc(256);
 
   // Sending mode_path as an array
+  //it sends a default array value which is [1,2,3,4,3,2,1]
+  //should change it when we make the mechanical parts
   JsonArray modePath = doc.createNestedArray("mode_path");
   modePath.add(1);
   modePath.add(2);
@@ -188,7 +219,6 @@ void handleTestCheck() {
   }
 }
 
-// HTTP handler to sync status (boolean)
 void handleSync() {
   if (server.method() == HTTP_POST) {
     DynamicJsonDocument doc(256);
@@ -203,19 +233,25 @@ void handleSync() {
   }
 }
 
-void setup() {
+void setup() { 
   Serial.begin(115200);
 
   attachInterrupt(digitalPinToInterrupt(interruptPin), onRise, RISING);
   pinMode(interruptPin, INPUT);
-  pinMode(buttonPin, INPUT_PULLUP);
 
   // Set up Wi-Fi Access Point
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-  WiFi.softAP(ssid, password);
-  WiFi.setSleep(WIFI_PS_NONE);  // Disable WiFi sleep
+  WiFi.softAP(ssid, password, 1, false, 1);
+  WiFi.setSleep(WIFI_PS_NONE); // Disable WiFi sleep
   IPAddress IP = WiFi.softAPIP();
   Serial.println("AP IP address: " + IP.toString());
+
+  // Load saved RPM ranges from NVS
+  loadRanges();
+  
+  // Ensure first and last values remain fixed
+  modeRanges[0][0] = 0;
+  modeRanges[numRanges - 1][1] = 14000;
 
   // Configure HTTP routes
   server.on("/data", HTTP_GET, handleRPMData);          // Send RPM data
@@ -227,12 +263,8 @@ void setup() {
   server.begin();
   Serial.println("HTTP server started");
 
-  // Configure pins and interrupts
+  randomSeed(analogRead(0));  // Seed random generator with noise from an analog pin
   pinMode(buttonPin, INPUT_PULLUP);
-
-  // Configure NVS storage
-  nvs_flash_init();
-  loadRanges();
 }
 
 void loop() {
@@ -247,12 +279,6 @@ void loop() {
         functionStatus = !functionStatus;
         Serial.print("Button pressed - Current status: ");
         Serial.println(functionStatus ? "ON" : "OFF");
-        for (int i = 0; i < numRanges; i++) {
-            Serial.print("modeRanges[");
-            Serial.print(i);
-            Serial.print("]: ");
-            Serial.println(modeRanges[i]);
-        }
       }
     }
   }
@@ -261,23 +287,29 @@ void loop() {
   // Handle HTTP requests
   server.handleClient();
 
-  // Generate random RPM between 0 and 14000
+  // Generate random RPM for testing purposes
   if (functionStatus) {
-    if (period > 0 && (millis() - lastPrintTime >= 100)) {  // Print every 500 ms
+    if (period > 0 && (millis() - lastPrintTime >= 100)) {
       lastPrintTime = millis();
-      freq = 1000000.0 / period ;  // Frequency in Hz
-      rpm = (freq * 120) / 36;  // Calculate RPM
+      freq = 1000000.0 / period;
+      rpm = (freq * 120) / 36;
 
-      Serial.print("Frequency: ");
-      Serial.println(freq);
       Serial.print("RPM: ");
       Serial.println(rpm);
-
-      int mode = determineMode(rpm);
-      Serial.print("Mode: ");
-      Serial.println(mode);
     }
   }
+
+  // Generate random RPM within the valid range
+  rpm = random(modeRanges[0][0], modeRanges[numRanges - 1][1] + 1);
+  int mode = determineMode(rpm);
+
+  // Serial output for debugging
+  Serial.print("Random RPM: ");
+  Serial.print(rpm);
+  Serial.print(" | Mode: ");
+  Serial.println(mode);
+
+  yield();  // Prevent watchdog timer reset
 
   delay(50);
 }
