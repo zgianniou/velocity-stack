@@ -28,12 +28,14 @@ bool functionStatus = true;       // Toggle status (ON/OFF)
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
-bool testCheck = false;  // Flag to determine if test_result should be sent
-bool syncStatus = false; // Flag to determine if ranges from esp32 to app should be sent
+// Mode ranges storage
+const int MAX_RANGES 10
+const int INITIAL_RANGES = 4;
+int32_t modeRanges[MAX_RANGES] = {0,3000, 7000,10000,14000};  // Default values
+int numRanges = INITIAL_RANGES;
 
-// Default mode ranges (to be updated via JSON)
-int32_t *modeRanges = nullptr;  // Dynamic array for mode ranges
-int numRanges = 0;              // Number of ranges
+//bool testCheck = false;  
+//bool syncStatus = false; 
 
 // Interrupt Service Routine
 void IRAM_ATTR onRise() {
@@ -57,28 +59,87 @@ void IRAM_ATTR onRise() {
   }
 }
 
-// Determine mode based on RPM and dynamic modeRanges
 int determineMode(float rpm) {
-  for (int i = 0; i < numRanges - 1; i++) {
-    if (rpm >= modeRanges[i] && rpm < modeRanges[i + 1]) {
-      return i + 1;  // Mode 1 to Mode N
+    for (int i = 0; i < numRanges - 1; i++) {
+        if (rpm >= modeRanges[i] && rpm < modeRanges[i + 1]) return i + 1;
     }
-  }
-  return 0;  // Default case
+    return 0;
 }
 
-// HTTP handler to send RPM data
 void handleRPMData() {
-  DynamicJsonDocument doc(256);
-
-  // Send RPM value
-  doc["rpm"] = rpm;
-
-  String jsonData;
-  serializeJson(doc, jsonData);
-  Serial.println("Sending RPM data: " + jsonData);
-  server.send(200, "application/json", jsonData);
+    DynamicJsonDocument doc(256);
+    doc["rpm"] = rpm;
+    String jsonData;
+    serializeJson(doc, jsonData);
+    server.send(200, "application/json", jsonData);
 }
+
+
+void handleRanges() {
+    if (server.method() == HTTP_POST) {
+        String jsonData = server.arg("plain");
+        DynamicJsonDocument doc(512);
+        if (deserializeJson(doc, jsonData)) {
+            server.send(400, "text/plain", "Invalid JSON");
+            return;
+        }
+        if (doc.containsKey("ranges")) {
+            JsonArray ranges = doc["ranges"].as<JsonArray>();
+            if (ranges.size() < 4 || ranges.size() > MAX_RANGES) {
+                server.send(400, "text/plain", "Invalid range size (min 4, max 12)");
+                return;
+            }
+            numRanges = ranges.size();
+            modeRanges[0] = 0;
+            modeRanges[numRanges - 1] = 14000;
+            for (int i = 1; i < numRanges - 1; i++) modeRanges[i] = ranges[i];
+            storeRanges();
+            server.send(200, "text/plain", "Ranges updated successfully");
+        }
+    }
+}
+
+
+void handleSendRanges() {
+    if (server.method() == HTTP_GET) {
+        DynamicJsonDocument doc(256);
+        JsonArray ranges = doc.createNestedArray("ranges");
+        for (int i = 0; i < numRanges; i++) {
+            ranges.add(modeRanges[i]);
+        }
+        String jsonData;
+        serializeJson(doc, jsonData);
+        server.send(200, "application/json", jsonData);
+    }
+}
+
+void storeRanges() {
+    nvs_handle_t handle;
+    if (nvs_open("storage", NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_set_i32(handle, "numRanges", numRanges);
+        for (int i = 0; i < numRanges; i++) {
+            char key[16];
+            sprintf(key, "range_%d", i);
+            nvs_set_i32(handle, key, modeRanges[i]);
+        }
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+void loadRanges() {
+    nvs_handle_t handle;
+    if (nvs_open("storage", NVS_READONLY, &handle) == ESP_OK) {
+        nvs_get_i32(handle, "numRanges", &numRanges);
+        for (int i = 0; i < numRanges; i++) {
+            char key[16];
+            sprintf(key, "range_%d", i);
+            nvs_get_i32(handle, key, &modeRanges[i]);
+        }
+        nvs_close(handle);
+    }
+}
+
 
 // HTTP handler to send test result (if test_check is true)
 void handleTestResult() {
@@ -127,55 +188,6 @@ void handleTestCheck() {
   }
 }
 
-// HTTP handler to update mode ranges
-void handleRanges() {
-  if (server.method() == HTTP_POST) {
-    String jsonData = server.arg("plain");
-    Serial.println("Received JSON data for ranges: " + jsonData);
-
-    // Parse the JSON data
-    DynamicJsonDocument doc(1024);
-    DeserializationError error = deserializeJson(doc, jsonData);
-
-    if (error) {
-      Serial.println("Failed to parse JSON");
-      server.send(400, "text/plain", "Invalid JSON");
-      return;
-    }
-
-    // Update mode ranges if present
-    if (doc.containsKey("ranges")) {
-      JsonArray ranges = doc["ranges"].as<JsonArray>();
-
-      // Ensure the first value is 0 and the last is 14000
-      if (ranges[0] != 0 || ranges[ranges.size() - 1] != 14000) {
-        Serial.println("Invalid ranges: First value must be 0 and last value must be 14000");
-        server.send(400, "text/plain", "Invalid ranges: First value must be 0 and last value must be 14000");
-        return;
-      }
-
-      // Free existing modeRanges if any
-      if (modeRanges != nullptr) {
-        free(modeRanges);
-      }
-
-      // Allocate memory for new ranges
-      numRanges = ranges.size();
-      modeRanges = (int32_t *)malloc(numRanges * sizeof(int32_t));
-
-      // Copy ranges to modeRanges
-      for (int i = 0; i < numRanges; i++) {
-        modeRanges[i] = ranges[i];
-      }
-
-      // Store the ranges in NVS
-      storeRanges();
-
-      server.send(200, "text/plain", "Ranges updated successfully");
-    }
-  }
-}
-
 // HTTP handler to sync status (boolean)
 void handleSync() {
   if (server.method() == HTTP_POST) {
@@ -191,86 +203,12 @@ void handleSync() {
   }
 }
 
-// HTTP handler to send RPM ranges
-void handleSendRanges() {
-  if (server.method() == HTTP_GET) {
-    DynamicJsonDocument doc(256);
-
-    // Send RPM ranges
-    JsonArray ranges = doc.createNestedArray("ranges");
-    for (int i = 0; i < numRanges; i++) {
-      ranges.add(modeRanges[i]);
-    }
-
-    String jsonData;
-    serializeJson(doc, jsonData);
-    Serial.println("Sending RPM ranges: " + jsonData);
-    server.send(200, "application/json", jsonData);
-  }
-}
-
-void app_main() {
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
-    }
-    // Now NVS is ready for use
-}
-
-// Store ranges in NVS
-void storeRanges() {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open("storage", NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        // Store the number of ranges
-        nvs_set_i32(handle, "numRanges", numRanges);
-
-        // Store each range value
-        for (int i = 0; i < numRanges; i++) {
-            char key[16];
-            sprintf(key, "range_%d", i);
-            nvs_set_i32(handle, key, modeRanges[i]);
-        }
-
-        nvs_commit(handle);
-        nvs_close(handle);
-        Serial.println("Ranges stored successfully!");
-    } else {
-        Serial.println("Failed to store ranges!");
-    }
-}
-
-// Load ranges from NVS
-void loadRanges() {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open("storage", NVS_READONLY, &handle);
-    if (err == ESP_OK) {
-        // Read the number of ranges
-        nvs_get_i32(handle, "numRanges", &numRanges);
-
-        // Allocate memory for modeRanges
-        modeRanges = (int32_t *)malloc(numRanges * sizeof(int32_t));
-
-        // Read each range value
-        for (int i = 0; i < numRanges; i++) {
-            char key[16];
-            sprintf(key, "range_%d", i);
-            nvs_get_i32(handle, key, &modeRanges[i]);
-        }
-
-        nvs_close(handle);
-        Serial.println("Ranges loaded successfully!");
-    } else {
-        Serial.println("Failed to load ranges!");
-    }
-}
-
 void setup() {
   Serial.begin(115200);
 
   attachInterrupt(digitalPinToInterrupt(interruptPin), onRise, RISING);
   pinMode(interruptPin, INPUT);
+  pinMode(buttonPin, INPUT_PULLUP);
 
   // Set up Wi-Fi Access Point
   WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
@@ -292,8 +230,8 @@ void setup() {
   // Configure pins and interrupts
   pinMode(buttonPin, INPUT_PULLUP);
 
-  // Configure NVS
-  app_main();
+  // Configure NVS storage
+  nvs_flash_init();
   loadRanges();
 }
 
