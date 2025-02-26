@@ -127,29 +127,41 @@ void storeRanges() {
 void loadRanges() {
   nvs_handle_t handle;
   if (nvs_open("storage", NVS_READONLY, &handle) == ESP_OK) {
-    int32_t tempNumRanges;  // Temporary storage for int32_t
-    nvs_get_i32(handle, "numRanges", &tempNumRanges);
-    numRanges = tempNumRanges;  // Direct assignment
+    int32_t tempNumRanges = 0;
+    if (nvs_get_i32(handle, "numRanges", &tempNumRanges) != ESP_OK || tempNumRanges <= 0 || tempNumRanges > MAX_RANGES) {
+      Serial.println("NVS is empty or corrupted. Using default values.");
+      numRanges = INITIAL_RANGES;  // Φόρτωση προκαθορισμένων τιμών
+      return;
+    }
+    
+    numRanges = tempNumRanges;  // Κανονική ανάθεση τιμής
 
     for (int i = 0; i < numRanges; i++) {  
       char key[16];
 
       int32_t value0, value1;
-
       sprintf(key, "range_%d_0", i);
       if (nvs_get_i32(handle, key, &value0) == ESP_OK) {
         modeRanges[i][0] = value0;
+      } else {
+        Serial.printf("Failed to load range_%d_0\n", i);
       }
 
       sprintf(key, "range_%d_1", i);
       if (nvs_get_i32(handle, key, &value1) == ESP_OK) {
         modeRanges[i][1] = value1;
+      } else {
+        Serial.printf("Failed to load range_%d_1\n", i);
       }
     }
 
     nvs_close(handle);
+  } else {
+    Serial.println("Failed to open NVS. Using default ranges.");
+    numRanges = INITIAL_RANGES;
   }
 }
+
 
 
 
@@ -294,9 +306,21 @@ void handleSync() {
 
 void setup() { 
   Serial.begin(115200);
+
+    // Αρχικοποίηση NVS (αν χρειάζεται)
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      nvs_flash_erase();
+      nvs_flash_init();
+  }
+
   // eraseNVS();
   attachInterrupt(digitalPinToInterrupt(interruptPin), onRise, RISING);
   pinMode(interruptPin, INPUT);
+  // Ρύθμιση LED ως έξοδος
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW); // Ξεκινάει σβηστό
+
 
   // Set up Wi-Fi Access Point
   WiFi.softAPConfig(IPAddress(192, 168, 4, 6), IPAddress(192, 168, 4, 6), IPAddress(255, 255, 255, 0));
@@ -338,6 +362,9 @@ void loop() {
         functionStatus = !functionStatus;
         Serial.print("Button pressed - Current status: ");
         Serial.println(functionStatus ? "ON" : "OFF");
+
+        // Ενημέρωση LED
+        digitalWrite(ledPin, functionStatus ? HIGH : LOW);
       }
     }
   }
@@ -359,7 +386,7 @@ void loop() {
   }
   //random rpm values to check fetching rpm,determine the mode we are at that moment,etc.(testing...)
   rpm = random(0,14000);
-   mode = determineMode(rpm);
+  mode = determineMode(rpm);
 
   yield();  // Prevent watchdog timer reset
 
