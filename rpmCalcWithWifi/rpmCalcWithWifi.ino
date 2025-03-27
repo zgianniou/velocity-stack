@@ -1,5 +1,6 @@
 #include <WiFi.h>  // Use WiFi library for ESP32
 #include <WebServer.h>
+#include <EEPROM.h>
 #include <ArduinoJson.h>  // Include the ArduinoJson library
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -15,12 +16,14 @@ WebServer server(80);
 const int analogPin = 0;      // ADC pin
 const int interruptPin = 18;  // Digital GPIO pin for signal detection
 const int buttonPin = 5;      // GPIO pin for the button
+const int wifiButtonPin = 4;
+bool wifiEnabled = true;  // Track WiFi state, diagnostics sto true kai race mode sto false
+bool staus=true;
 
 // Variables for RPM simulation
 volatile unsigned long t1 = 0, t2 = 0;               // Time variables
 volatile float period = 0.0, freq = 1000.0, rpm = 0.0;  // Period, frequency, and RPM variables
 volatile bool risingEdgeDetected = false;
-volatile int mode=0;
 
 unsigned long lastPrintTime = 0;  // For periodic RPM updates
 bool functionStatus = true;       // Toggle status (ON/OFF)
@@ -28,13 +31,13 @@ unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
 // Mode ranges storage
-const int MAX_RANGES=12;
+const int MAX_RANGES=12
 const int INITIAL_RANGES = 4;
 
-int modeRanges[MAX_RANGES][2] = {
+float modeRanges[INITIAL_RANGES][2] = {
   {0,3000},
-  {3001, 5000},
-  {5001, 8000},
+  {3001, 5000}
+  {5001, 8000}
   {8001, 14000}
 };
 
@@ -65,7 +68,7 @@ void IRAM_ATTR onRise() {
   }
 }
 
-int determineMode(int rpm) {
+int determineMode(float rpm) {
     for (int i = 0; i < numRanges; i++) { // Use dynamic numRanges instead of fixed 4
         if (rpm >= modeRanges[i][0] && rpm < modeRanges[i][1]) {
             return i + 1; // Mode 1 to Mode N
@@ -74,157 +77,88 @@ int determineMode(int rpm) {
     return 0; // Default case (out of range)
 }
 
-
-
-void eraseNVS() {
-  esp_err_t err = nvs_flash_erase();
-  if (err == ESP_OK) {
-    Serial.println("NVS erased successfully.");
-    err = nvs_flash_init();
-    if (err == ESP_OK) {
-      Serial.println("NVS initialized.");
-    } else {
-      Serial.print("Error initializing NVS: ");
-      Serial.println(err);
-    }
-  } else {
-    Serial.print("Error erasing NVS: ");
-    Serial.println(err);
-  }
-}
-
 void storeRanges() {
-  nvs_handle_t handle;
-  if (nvs_open("storage", NVS_READWRITE, &handle) == ESP_OK) {
-    // Store the number of ranges
-    nvs_set_i32(handle, "numRanges", numRanges);
+    nvs_handle_t handle;
+    if (nvs_open("storage", NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_set_i32(handle, "numRanges", numRanges);
+        for (int i = 0; i < numRanges; i++) {
+            char key[16];
+            sprintf(key, "range_%d_0", i);
+            nvs_set_f32(handle, key, modeRanges[i][0]);
 
-    for (int i = 0; i < numRanges; i++) {
-      char key[16];
-      int32_t value0 = modeRanges[i][0];
-      int32_t value1 = modeRanges[i][1];
-
-      int32_t storedValue0, storedValue1;
-      
-      // Check and update the first value if needed
-      sprintf(key, "range_%d_0", i);
-      if (nvs_get_i32(handle, key, &storedValue0) != ESP_OK || storedValue0 != value0) {
-        nvs_set_i32(handle, key, value0);
-      }
-      
-      // Check and update the second value if needed
-      sprintf(key, "range_%d_1", i);
-      if (nvs_get_i32(handle, key, &storedValue1) != ESP_OK || storedValue1 != value1) {
-        nvs_set_i32(handle, key, value1);
-      }
+            sprintf(key, "range_%d_1", i);
+            nvs_set_f32(handle, key, modeRanges[i][1]);
+        }
+        nvs_commit(handle);
+        nvs_close(handle);
     }
-
-    nvs_commit(handle);
-    nvs_close(handle);
-  }
 }
 
 void loadRanges() {
-  nvs_handle_t handle;
-  if (nvs_open("storage", NVS_READONLY, &handle) == ESP_OK) {
-    int32_t tempNumRanges = 0;
-    if (nvs_get_i32(handle, "numRanges", &tempNumRanges) != ESP_OK || tempNumRanges <= 0 || tempNumRanges > MAX_RANGES) {
-      Serial.println("NVS is empty or corrupted. Using default values.");
-      numRanges = INITIAL_RANGES;  // Φόρτωση προκαθορισμένων τιμών
-      return;
+    nvs_handle_t handle;
+    if (nvs_open("storage", NVS_READONLY, &handle) == ESP_OK) {
+        nvs_get_i32(handle, "numRanges", &numRanges);
+        for (int i = 1; i < numRanges - 1; i++) {  // Load only middle ranges
+            char key[16];
+            sprintf(key, "range_%d_0", i);
+            nvs_get_f32(handle, key, &modeRanges[i][0]);
+
+            sprintf(key, "range_%d_1", i);
+            nvs_get_f32(handle, key, &modeRanges[i][1]);
+        }
+        nvs_close(handle);
     }
-    
-    numRanges = tempNumRanges;  // Κανονική ανάθεση τιμής
-
-    for (int i = 0; i < numRanges; i++) {  
-      char key[16];
-
-      int32_t value0, value1;
-      sprintf(key, "range_%d_0", i);
-      if (nvs_get_i32(handle, key, &value0) == ESP_OK) {
-        modeRanges[i][0] = value0;
-      } else {
-        Serial.printf("Failed to load range_%d_0\n", i);
-      }
-
-      sprintf(key, "range_%d_1", i);
-      if (nvs_get_i32(handle, key, &value1) == ESP_OK) {
-        modeRanges[i][1] = value1;
-      } else {
-        Serial.printf("Failed to load range_%d_1\n", i);
-      }
-    }
-
-    nvs_close(handle);
-  } else {
-    Serial.println("Failed to open NVS. Using default ranges.");
-    numRanges = INITIAL_RANGES;
-  }
 }
-
-
-
 
 void handleRanges() {
-  if (server.method() == HTTP_POST) {
-    String jsonData = server.arg("plain");
-    DynamicJsonDocument doc(512);  // Increase size if needed
-    DeserializationError error = deserializeJson(doc, jsonData);
-    if (error) {
-      server.send(400, "text/plain", "Invalid JSON");
-      return;
+    if (server.method() == HTTP_POST) {
+        String jsonData = server.arg("plain");
+        DynamicJsonDocument doc(512);
+        if (deserializeJson(doc, jsonData)) {
+            server.send(400, "text/plain", "Invalid JSON");
+            return;
+        }
+
+        if (doc.containsKey("ranges")) {
+            JsonArray ranges = doc["ranges"].as<JsonArray>();
+            int newNumRanges = ranges.size();
+            
+            if (newNumRanges > MAX_RANGES - 2) {
+                server.send(400, "text/plain", "Too many ranges");
+                return;
+            }
+
+            modeRanges[0][0] = 0;        // Fixed start
+            modeRanges[0][1] = ranges[0];
+
+            for (int i = 1; i < newNumRanges; i++) {
+                modeRanges[i][0] = ranges[i - 1] + 1;
+                modeRanges[i][1] = ranges[i];
+            }
+
+            modeRanges[newNumRanges][0] = ranges[newNumRanges - 1] + 1;
+            modeRanges[newNumRanges][1] = 14000;  // Fixed end
+
+            numRanges = newNumRanges + 1;
+            storeRanges();
+
+            server.send(200, "text/plain", "Ranges updated successfully");
+        }
     }
-    if (doc.containsKey("ranges")) {
-      JsonArray boundaries = doc["ranges"].as<JsonArray>();
-      int count = boundaries.size();
-      
-      if (count < 2) {
-        server.send(400, "text/plain", "Not enough boundaries provided");
-        return;
-      }
-      
-      // Create ranges by pairing consecutive boundaries.
-      int newNumRanges = count - 1;
-      if (newNumRanges > MAX_RANGES) {
-        Serial.println("Too many ranges");
-        server.send(400, "text/plain", "Too many ranges");
-        return;
-      }
-      
-      for (int i = 0; i < newNumRanges; i++) {
-        modeRanges[i][0] = boundaries[i].as<int>();
-        modeRanges[i][1] = boundaries[i + 1].as<int>();
-      }
-      numRanges = newNumRanges;
-      storeRanges();
-      server.send(200, "text/plain", "Ranges updated successfully");
-      Serial.println("Ranges updated successfully");
-    }
-  }
 }
-
-
-
 
 void handleSendRanges() {
-  if (server.method() == HTTP_GET) {
     DynamicJsonDocument doc(256);
     JsonArray ranges = doc.createNestedArray("ranges");
-
-    // Loop through the valid ranges
     for (int i = 0; i < numRanges; i++) {
-      JsonArray range = ranges.createNestedArray();
-      range.add(modeRanges[i][0]);
-      range.add(modeRanges[i][1]);
+        JsonArray range = ranges.createNestedArray();
+        range.add(modeRanges[i][0]);
+        range.add(modeRanges[i][1]);
     }
-
     String jsonData;
     serializeJson(doc, jsonData);
-    Serial.println("Sending RPM ranges: " + jsonData);
     server.send(200, "application/json", jsonData);
-  }
 }
-
 
 // HTTP handler to send RPM data
 void handleRPMData() {
@@ -235,9 +169,7 @@ void handleRPMData() {
 
   String jsonData;
   serializeJson(doc, jsonData);
-  Serial.print("Sending RPM data: " + jsonData);
-  Serial.printf("    | Mode: %d\n", mode);
-
+  Serial.println("Sending RPM data: " + jsonData);
   server.send(200, "application/json", jsonData);
 }
 
@@ -304,92 +236,64 @@ void handleSync() {
   }
 }
 
-void setup() { 
-  Serial.begin(115200);
+void raceMode() {
+    WiFi.softAPdisconnect(true);
+    Serial.println("Race Mode Active: WiFi Disabled");
+    
+    if (period > 0 && (millis() - lastPrintTime >= 100)) {
+        lastPrintTime = millis();
+        freq = 1000000.0 / period;
+        rpm = (freq * 120) / 36;
+        Serial.print("RPM: ");
+        Serial.println(rpm);
+    }
 
-    // Αρχικοποίηση NVS (αν χρειάζεται)
-  esp_err_t ret = nvs_flash_init();
-  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-      nvs_flash_erase();
-      nvs_flash_init();
-  }
+    //Safe Mode Section, μενει να δουμε τον αισθητηρα του servo και αναλογως να rebootαρει
+    //Serial.println("Rebooting ESP32 due to error...");
+    //delay(1000);  // Give time for the message to print
+    //ESP.restart();
+    
+}
 
-  // eraseNVS();
-  attachInterrupt(digitalPinToInterrupt(interruptPin), onRise, RISING);
-  pinMode(interruptPin, INPUT);
-  // Ρύθμιση LED ως έξοδος
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, LOW); // Ξεκινάει σβηστό
+void diagnosticsMode() {
+    // Set up Wi-Fi Access Point
+    WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
+    WiFi.softAP(ssid, password, 1, false, 1);
+    WiFi.setSleep(WIFI_PS_NONE); // Disable WiFi sleep
+    IPAddress IP = WiFi.softAPIP();
+    Serial.println("AP IP address: " + IP.toString());
 
+}
 
-  // Set up Wi-Fi Access Point
-  WiFi.softAPConfig(IPAddress(192, 168, 4, 6), IPAddress(192, 168, 4, 6), IPAddress(255, 255, 255, 0));
-  WiFi.softAP(ssid, password, 1, false, 1);
-  WiFi.setSleep(WIFI_PS_NONE); // Disable WiFi sleep
-  IPAddress IP = WiFi.softAPIP();
-  Serial.println("AP IP address: " + IP.toString());
-
-  // Load saved RPM ranges from NVS
-  loadRanges();
-  
-  // Ensure first and last values remain fixed
-  modeRanges[0][0] = 0;
-  modeRanges[numRanges - 1][1] = 14000;
-
-  // Configure HTTP routes
-  server.on("/data", HTTP_GET, handleRPMData);          // Send RPM data
-  server.on("/test_result", HTTP_GET, handleTestResult);  // Send Test Results
-  server.on("/save_test_check", HTTP_POST, handleTestCheck); // Receive test_check flag as boolean value
-  server.on("/save_ranges", HTTP_POST, handleRanges); // Receive ranges for modes
-  server.on("/sync", HTTP_POST, handleSync); // Send sync status (boolean)
-  server.on("/ranges", HTTP_GET, handleSendRanges); // Send RPM ranges
-  server.begin();
-  Serial.println("HTTP server started");
-
-  randomSeed(analogRead(0));  // Seed random generator with noise from an analog pin
-  pinMode(buttonPin, INPUT_PULLUP);
+void setup() {
+    Serial.begin(115200);
+    attachInterrupt(digitalPinToInterrupt(interruptPin), onRise, RISING);
+    pinMode(interruptPin, INPUT);
+    pinMode(buttonPin, INPUT_PULLUP);
+    pinMode(wifiButtonPin, INPUT_PULLUP);
+    server.begin();
 }
 
 void loop() {
-  static bool lastButtonState = HIGH;
-  bool currentButtonState = digitalRead(buttonPin);
-
-  // Debounce button input
-  if (currentButtonState != lastButtonState) {
-    if (millis() - lastDebounceTime > debounceDelay) {
-      lastDebounceTime = millis();
-      if (currentButtonState == LOW) {
-        functionStatus = !functionStatus;
-        Serial.print("Button pressed - Current status: ");
-        Serial.println(functionStatus ? "ON" : "OFF");
-
-        // Ενημέρωση LED
-        digitalWrite(ledPin, functionStatus ? HIGH : LOW);
-      }
+    static bool lastWifiButtonState = HIGH;
+    bool currentWifiButtonState = digitalRead(wifiButtonPin);
+    
+    if (currentWifiButtonState == LOW && lastWifiButtonState == HIGH) {
+        wifiEnabled = !wifiEnabled;
+        Serial.print("Mode Toggled - Now: ");
+        Serial.println(wifiEnabled ? "Diagnostics Mode" : "Race Mode");
+        delay(300);
     }
-  }
-  lastButtonState = currentButtonState;
+    lastWifiButtonState = currentWifiButtonState;
 
-  // Handle HTTP requests
-  server.handleClient();
-
-  // Generate random RPM for testing purposes
-  if (functionStatus) {
-    if (period > 0 && (millis() - lastPrintTime >= 100)) {
-      lastPrintTime = millis();
-      freq = 1000000.0 / period;
-      rpm = (freq * 120) / 36;
-
-      Serial.print("RPM: ");
-      Serial.println(rpm);
+    wifiEnabled=status;
+    if(status=true)
+    {
+      diagnosticsMode();
     }
-  }
-  //random rpm values to check fetching rpm,determine the mode we are at that moment,etc.(testing...)
-  rpm = random(0,14000);
-  mode = determineMode(rpm);
-
-  yield();  // Prevent watchdog timer reset
-
-  delay(50);
+    if(status=false)
+    {
+      raceMode();
+    }
+    
 }
-
