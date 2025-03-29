@@ -8,13 +8,16 @@
 const char* ssid = "ESP8266_AP";
 const char* password = "12345678";
 
+#define outputButton 9 HIGH
+
 // Create a web server on port 80
 WebServer server(80);
 
 // Pin configuration
 const int analogPin = 0;      // ADC pin
 const int interruptPin = 18;  // Digital GPIO pin for signal detection
-const int buttonPin = 5;      // GPIO pin for the button
+const int wifiButtonPin = 4;
+const int wifiButtonPinOutput = 9;
 
 // Variables for RPM simulation
 volatile unsigned long t1 = 0, t2 = 0;               // Time variables
@@ -26,6 +29,13 @@ unsigned long lastPrintTime = 0;  // For periodic RPM updates
 bool functionStatus = true;       // Toggle status (ON/OFF)
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
+bool wifiEnabled = true;  // Track WiFi state, diagnostics sto true kai race mode sto false
+bool status=true;
+bool printOnceEnable=false;
+
+bool printOnceDisable=false;
+bool lastWifiButtonState = HIGH;  // Previous button state
+bool wifiButtonState = HIGH;
 
 // Mode ranges storage
 const int MAX_RANGES=12;
@@ -306,7 +316,30 @@ void handleSync() {
     server.send(200, "application/json", jsonData);
   }
 }
+void enableWiFi(){
+     WiFi.softAPConfig(IPAddress(192, 168, 4, 6), IPAddress(192, 168, 4, 6), IPAddress(255, 255, 255, 0));
+  WiFi.softAP(ssid, password, 1, false, 1);
+  WiFi.setSleep(WIFI_PS_NONE); // Disable WiFi sleep
+  IPAddress IP = WiFi.softAPIP();
+  Serial.println("AP IP address: " + IP.toString());  
+  Serial.println("STARTING WIFI...");
 
+    Serial.println("START WIFI");
+    WiFi.begin(ssid, password);
+ 
+    
+ 
+}
+void disableWiFi() {
+  // Disconnect and erase saved credentials
+  WiFi.disconnect(true);  // true will also clear the saved credentials
+
+  // Turn off the WiFi
+  WiFi.mode(WIFI_OFF);  // Turn off WiFi completely
+  WiFi.disconnect(true,true);
+  // Optionally, print a message indicating WiFi has been turned off
+  Serial.println("WiFi Disabled and settings erased.");
+}
 void setup() { 
   Serial.begin(115200);
   // eraseNVS();
@@ -339,45 +372,68 @@ void setup() {
   Serial.println("HTTP server started");
 
   randomSeed(analogRead(0));  // Seed random generator with noise from an analog pin
-  pinMode(buttonPin, INPUT_PULLUP);
+  pinMode(wifiButtonPin, INPUT_PULLUP);
+
+  
+  
+}
+void diagnosticsMode() {
+  printOnceDisable=false;
+  if(!printOnceEnable){
+    enableWiFi();
+    printOnceEnable= true;
+  }
+    rpm = random(0,14000);
+    mode = determineMode(rpm);
+    yield();  // Prevent watchdog timer reset
+
 }
 
-void loop() {
-  static bool lastButtonState = HIGH;
-  bool currentButtonState = digitalRead(buttonPin);
-
-  // Debounce button input
-  if (currentButtonState != lastButtonState) {
-    if (millis() - lastDebounceTime > debounceDelay) {
-      lastDebounceTime = millis();
-      if (currentButtonState == LOW) {
-        functionStatus = !functionStatus;
-        Serial.print("Button pressed - Current status: ");
-        Serial.println(functionStatus ? "ON" : "OFF");
-      }
-    }
+void raceMode() {
+  printOnceEnable=false;
+  if(!printOnceDisable){
+      disableWiFi();
+      printOnceDisable=true;
   }
-  lastButtonState = currentButtonState;
-
-  // Handle HTTP requests
-  server.handleClient();
-
-  // Generate random RPM for testing purposes
-  if (functionStatus) {
+    Serial.println("Race Mode Active: WiFi Disabled");
+    
     if (period > 0 && (millis() - lastPrintTime >= 100)) {
-      lastPrintTime = millis();
-      freq = 1000000.0 / period;
-      rpm = (freq * 120) / 36;
-
-      Serial.print("RPM: ");
-      Serial.println(rpm);
+        lastPrintTime = millis();
+        freq = 1000000.0 / period;
+        rpm = (freq * 120) / 36;
+        Serial.print("RPM: ");
+        Serial.println(rpm);
     }
-  }
-  //random rpm values to check fetching rpm,determine the mode we are at that moment,etc.(testing...)
-  rpm = random(0,14000);
-   mode = determineMode(rpm);
 
-  yield();  // Prevent watchdog timer reset
+    //Safe Mode Section, μενει να δουμε τον αισθητηρα του servo και αναλογως να rebootαρει
+    //Serial.println("Rebooting ESP32 due to error...");
+    //delay(1000);  // Give time for the message to print
+    //ESP.restart();
+}
+void loop() {
+    wifiButtonState = digitalRead(wifiButtonPin);
+
+  if (wifiButtonState == LOW && lastWifiButtonState == HIGH) {
+        delay(50);
+
+        wifiEnabled = !wifiEnabled;
+        Serial.print("Mode Toggled - Now: ");
+        Serial.println(wifiEnabled ? "Diagnostics Mode" : "Race Mode");
+        delay(300);
+        status = !status;
+    }
+    lastWifiButtonState = wifiButtonState;
+
+    if(status=true)
+    {
+      diagnosticsMode();
+    }
+    if(status=false)
+    {
+      raceMode();
+    }
+  //random rpm values to check fetching rpm,determine the mode we are at that moment,etc.(testing...)
+ 
 
   delay(50);
 }
