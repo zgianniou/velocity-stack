@@ -317,27 +317,14 @@ void handleSync() {
   }
 }
 void enableWiFi(){
-     WiFi.softAPConfig(IPAddress(192, 168, 4, 6), IPAddress(192, 168, 4, 6), IPAddress(255, 255, 255, 0));
-  WiFi.softAP(ssid, password, 1, false, 1);
-  WiFi.setSleep(WIFI_PS_NONE); // Disable WiFi sleep
-  IPAddress IP = WiFi.softAPIP();
-  Serial.println("AP IP address: " + IP.toString());  
-  Serial.println("STARTING WIFI...");
+    WiFi.setSleep(WIFI_PS_NONE); // Disable Wi-Fi sleep if necessary
+  Serial.println("WiFi Enabled.");
 
-    Serial.println("START WIFI");
-    WiFi.begin(ssid, password);
- 
-    
  
 }
 void disableWiFi() {
-  // Disconnect and erase saved credentials
-  WiFi.disconnect(true);  // true will also clear the saved credentials
+  WiFi.setSleep(true); // Disable Wi-Fi sleep if necessary
 
-  // Turn off the WiFi
-  WiFi.mode(WIFI_OFF);  // Turn off WiFi completely
-  WiFi.disconnect(true,true);
-  // Optionally, print a message indicating WiFi has been turned off
   Serial.println("WiFi Disabled and settings erased.");
 }
 void setup() { 
@@ -378,11 +365,8 @@ void setup() {
   
 }
 void diagnosticsMode() {
-  printOnceDisable=false;
-  if(!printOnceEnable){
-    enableWiFi();
-    printOnceEnable= true;
-  }
+  enableWiFi();
+    
     rpm = random(0,14000);
     mode = determineMode(rpm);
     yield();  // Prevent watchdog timer reset
@@ -390,15 +374,11 @@ void diagnosticsMode() {
 }
 
 void raceMode() {
-  printOnceEnable=false;
-  if(!printOnceDisable){
-      disableWiFi();
-      printOnceDisable=true;
-  }
+    disableWiFi();
     Serial.println("Race Mode Active: WiFi Disabled");
     
     if (period > 0 && (millis() - lastPrintTime >= 100)) {
-        lastPrintTime = millis();
+        lastPrintTime = millis(); 
         freq = 1000000.0 / period;
         rpm = (freq * 120) / 36;
         Serial.print("RPM: ");
@@ -424,11 +404,11 @@ void loop() {
     }
     lastWifiButtonState = wifiButtonState;
 
-    if(status=true)
+    if(status==true)
     {
       diagnosticsMode();
     }
-    if(status=false)
+    if(status==false)
     {
       raceMode();
     }
