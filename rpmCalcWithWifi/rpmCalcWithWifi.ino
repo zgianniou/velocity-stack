@@ -30,7 +30,7 @@ bool functionStatus = true;       // Toggle status (ON/OFF)
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 bool wifiEnabled = true;  // Track WiFi state, diagnostics sto true kai race mode sto false
-bool status=true;
+bool status=false;
 bool printOnceEnable=false;
 
 bool printOnceDisable=false;
@@ -317,15 +317,13 @@ void handleSync() {
   }
 }
 void enableWiFi(){
-    WiFi.setSleep(WIFI_PS_NONE); // Disable Wi-Fi sleep if necessary
-  Serial.println("WiFi Enabled.");
-
- 
+  Serial.println("📶 Turning WiFi ON – allowing client connections");
+  startWiFi();
 }
 void disableWiFi() {
-  WiFi.setSleep(true); // Disable Wi-Fi sleep if necessary
-
-  Serial.println("WiFi Disabled and settings erased.");
+  Serial.println("📴 Turning WiFi OFF – hiding SSID, no client access");
+  WiFi.softAPdisconnect(true);     // Stop access point
+  esp_wifi_stop(); 
 }
 void setup() { 
   Serial.begin(115200);
@@ -365,8 +363,11 @@ void setup() {
   
 }
 void diagnosticsMode() {
-  enableWiFi();
-    
+  printOnceDisable=false;
+  if(!printOnceEnable){
+    enableWiFi();
+    printOnceEnable= true;
+  }
     rpm = random(0,14000);
     mode = determineMode(rpm);
     yield();  // Prevent watchdog timer reset
@@ -374,11 +375,15 @@ void diagnosticsMode() {
 }
 
 void raceMode() {
-    disableWiFi();
+  printOnceEnable=false;
+  if(!printOnceDisable){
+      disableWiFi();
+      printOnceDisable=true;
+  }
     Serial.println("Race Mode Active: WiFi Disabled");
     
     if (period > 0 && (millis() - lastPrintTime >= 100)) {
-        lastPrintTime = millis(); 
+        lastPrintTime = millis();
         freq = 1000000.0 / period;
         rpm = (freq * 120) / 36;
         Serial.print("RPM: ");
@@ -412,6 +417,8 @@ void loop() {
     {
       raceMode();
     }
+    Serial.println(status ? "WiFi is ON (SSID visible)" : "WiFi is OFF (hidden)");
+
   //random rpm values to check fetching rpm,determine the mode we are at that moment,etc.(testing...)
  
 
