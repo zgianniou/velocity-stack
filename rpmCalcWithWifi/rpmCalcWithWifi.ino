@@ -3,7 +3,6 @@
 #include <ArduinoJson.h>  // Include the ArduinoJson library
 #include "nvs_flash.h"
 #include "nvs.h"
-#include "esp_wifi.h"
 
 // Access Point credentials
 const char* ssid = "ESP8266_AP";
@@ -316,25 +315,6 @@ void handleSync() {
     Serial.println("Sending sync status: " + jsonData);
     server.send(200, "application/json", jsonData);
   }
-}
-void startWiFi() {
-   WiFi.softAPConfig(IPAddress(192, 168, 4, 6), IPAddress(192, 168, 4, 6), IPAddress(255, 255, 255, 0));
-  WiFi.softAP(ssid, password, 1, false, 1);
-  WiFi.setSleep(WIFI_PS_NONE); // Disable WiFi sleep
-  IPAddress IP = WiFi.softAPIP();
-  Serial.println("AP IP address: " + IP.toString());
-
-    server.begin();
-
-  Serial.print("Connecting to WiFi");
-  int retries = 0;
-  while (WiFi.status() != WL_CONNECTED && retries < 20) {
-    delay(500);
-    Serial.print(".");
-    retries++;
-  }
-
-  
 }
 void enableWiFi(){
   Serial.println("📶 Turning WiFi ON – allowing client connections");
