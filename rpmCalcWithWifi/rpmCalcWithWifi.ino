@@ -4,6 +4,8 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_wifi.h"
+#include <Arduino.h>
+#include <SCServo.h>
 
 // Access Point credentials
 const char* ssid = "ESP8266_AP";
@@ -13,6 +15,12 @@ const char* password = "12345678";
 
 // Create a web server on port 80
 WebServer server(80);
+
+//servo pins
+#define RX 6        // ESP32 RX pin
+#define TX 7        // ESP32 TX pin
+#define SERVO_ID 1  // Default servo ID
+SMS_STS st;
 
 // Pin configuration
 const int analogPin = 0;      // ADC pin
@@ -48,6 +56,8 @@ int modeRanges[MAX_RANGES][2] = {
   {5001, 8000},
   {8001, 14000}
 };
+
+int modeServoPositions[MAX_RANGES];
 
 int numRanges = INITIAL_RANGES;
 
@@ -164,6 +174,26 @@ void loadRanges() {
 
 
 
+void generateServoPositions(int numSteps) {
+  if (numSteps > MAX_RANGES) {
+    Serial.println("Error: numSteps exceeds MAX_RANGES.");
+    return;
+  }
+
+  for (int i = 0; i < numSteps; i++) {
+    float angleDeg = (360.0 / numSteps) * i;
+    int position = (int)(4096.0 * angleDeg / 360.0);
+    modeServoPositions[i] = position;
+
+    Serial.print("Step ");
+    Serial.print(i);
+    Serial.print(": ");
+    Serial.print(angleDeg);
+    Serial.print("° => Position ");
+    Serial.println(position);
+  }
+}
+
 void handleRanges() {
   if (server.method() == HTTP_POST) {
     String jsonData = server.arg("plain");
@@ -194,6 +224,7 @@ void handleRanges() {
         modeRanges[i][0] = boundaries[i].as<int>();
         modeRanges[i][1] = boundaries[i + 1].as<int>();
       }
+      generateServoPositions(numRanges);
       numRanges = newNumRanges;
       storeRanges();
       server.send(200, "text/plain", "Ranges updated successfully");
@@ -345,8 +376,24 @@ void disableWiFi() {
   WiFi.softAPdisconnect(true);     // Stop access point
   esp_wifi_stop(); 
 }
+
+int degreesToPos(float degrees) {
+  return int(4096 * (degrees / 360.0));
+}
 void setup() { 
   Serial.begin(115200);
+
+  //servo setup
+  Serial1.begin(1000000, SERIAL_8N1, RX, TX);  // UART at 1Mbps
+  st.pSerial = &Serial1;
+  delay(1000);
+  st.WritePosEx(SERVO_ID, 0, 0, 20);
+  Serial.println("Position : 0");
+
+  delay(5000);
+  Serial.println("Servo is ready!");
+
+
   // eraseNVS();
   attachInterrupt(digitalPinToInterrupt(interruptPin), onRise, RISING);
   pinMode(interruptPin, INPUT);
@@ -388,8 +435,10 @@ void diagnosticsMode() {
     enableWiFi();
     printOnceEnable= true;
   }
-    rpm = random(0,14000);
+    rpm ++;
     mode = determineMode(rpm);
+    st.WritePosEx(SERVO_ID, modeServoPositions[mode-1], 0, 20);  // Move to 360° (full rotation)
+
     yield();  // Prevent watchdog timer reset
 
 }
