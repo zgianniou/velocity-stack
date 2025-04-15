@@ -1,0 +1,15 @@
+        .--------------.
+        |  .--------.  |                  .--------. ||
+        |  | ESP32  |  |                  |        |=||  motor shaft
+        |  `--------'  |                  | ST3215 | ||
+        |              |                  |  Servo |
+ 5V ----| VIN   17 TX2 |-- 10K -----------| RX     |
+GND ----| GND   16 RX2 |--------'         |    PWR |---- 12V
+        `--------------'                  |    GND |---- GND
+                                          `--------'
+
+
+
+
+
+https://github.com/sepastian/ESP32_ST3215?tab=readme-ov-file
