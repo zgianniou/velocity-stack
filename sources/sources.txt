@@ -13,3 +13,60 @@ GND ----| GND   16 RX2 |--------'         |    PWR |---- 12V
 
 
 https://github.com/sepastian/ESP32_ST3215?tab=readme-ov-file
+
+
+
+//example code
+
+#include <Arduino.h>
+#include <SCServo.h>
+
+#define RX 6        // ESP32 RX pin
+#define TX 7        // ESP32 TX pin
+#define LED 2       // Optional built-in LED
+#define SERVO_ID 1  // Default servo ID
+
+SMS_STS st;
+
+void setup() {
+  Serial.begin(115200);  // Serial monitor
+  pinMode(LED, OUTPUT);
+  digitalWrite(LED, HIGH);
+
+  Serial1.begin(1000000, SERIAL_8N1, RX, TX);  // UART at 1Mbps
+  st.pSerial = &Serial1;
+
+  delay(1000);
+  st.WritePosEx(SERVO_ID, 0, 0, 20);
+  Serial.println("Position : 0");
+
+  delay(5000);
+  Serial.println("Position : 0");
+  digitalWrite(LED, LOW);
+}
+int degreesToPos(float degrees) {
+  return int(4096 * (degrees / 360.0));
+}
+
+void rotateOnce() {
+  // Move to 0 position (reset)
+  st.WritePosEx(SERVO_ID, 0, 0, 20);  // 0 = full speed, 20 = smooth acceleration
+  delay(1000);                        // Wait for reset to complete
+
+  // Rotate 360° (4095)
+  st.WritePosEx(SERVO_ID, 4095, 0, 20);  // Move to 360° (full rotation)
+  delay(1500);                           // Wait for the rotation to complete
+
+  // Rotate an additional 120° (1365 steps)
+  st.WritePosEx(SERVO_ID, 6000, 0, 20);  // Move to 120° after full rotation
+  delay(1500);                           // Wait for the additional rotation to complete
+}
+
+
+void loop() {
+  // Perform two full rotations
+  rotateOnce();  // First 360°
+  rotateOnce();  // Second 360°
+
+  digitalWrite(LED, HIGH);  // Done
+}
