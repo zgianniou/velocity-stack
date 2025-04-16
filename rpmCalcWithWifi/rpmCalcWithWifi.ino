@@ -33,6 +33,7 @@ volatile unsigned long t1 = 0, t2 = 0;               // Time variables
 volatile float period = 0.0, freq = 1000.0, rpm = 0.0;  // Period, frequency, and RPM variables
 volatile bool risingEdgeDetected = false;
 volatile int mode=0;
+volatile int lastMode=0;
 
 unsigned long lastPrintTime = 0;  // For periodic RPM updates
 bool functionStatus = true;       // Toggle status (ON/OFF)
@@ -175,24 +176,27 @@ void loadRanges() {
 
 
 void generateServoPositions(int numSteps) {
-  if (numSteps > MAX_RANGES) {
-    Serial.println("Error: numSteps exceeds MAX_RANGES.");
+  if (numSteps > MAX_RANGES || numSteps < 2) {
+    Serial.println("Error: numSteps must be between 2 and MAX_RANGES.");
     return;
   }
 
+  Serial.println(numSteps);
   for (int i = 0; i < numSteps; i++) {
-    float angleDeg = (360.0 / numSteps) * i;
+    float angleDeg = (360.0 / (numSteps - 1)) * i;
     int position = (int)(4096.0 * angleDeg / 360.0);
     modeServoPositions[i] = position;
 
     Serial.print("Step ");
     Serial.print(i);
     Serial.print(": ");
-    Serial.print(angleDeg);
+    Serial.print(angleDeg, 2);
     Serial.print("° => Position ");
     Serial.println(position);
   }
+  delay(3000);
 }
+
 
 void handleRanges() {
   if (server.method() == HTTP_POST) {
@@ -290,7 +294,7 @@ void handleTestResult() {
 
   // Generate the pattern [1, 2, 3, 4, 3, 2, 1]
   for (int i = 1; i <= numRanges; i++) {
-    modePath.add(i); // Add ascending values: 1, 2, 3, 4
+    st.WritePosEx(SERVO_ID, modeServoPositions[mode-1], 0, 20);  // Move to 360° (full rotation)
   }
   for (int i = numRanges - 1; i >= 1; i--) {
     modePath.add(i); // Add descending values: 3, 2, 1
@@ -383,16 +387,7 @@ int degreesToPos(float degrees) {
 void setup() { 
   Serial.begin(115200);
 
-  //servo setup
-  Serial1.begin(1000000, SERIAL_8N1, RX, TX);  // UART at 1Mbps
-  st.pSerial = &Serial1;
-  delay(1000);
-  st.WritePosEx(SERVO_ID, 0, 0, 20);
-  Serial.println("Position : 0");
-
-  delay(5000);
-  Serial.println("Servo is ready!");
-
+  
 
   // eraseNVS();
   attachInterrupt(digitalPinToInterrupt(interruptPin), onRise, RISING);
@@ -425,20 +420,64 @@ void setup() {
 
   randomSeed(analogRead(0));  // Seed random generator with noise from an analog pin
   pinMode(wifiButtonPin, INPUT_PULLUP);
+//servo setup
+  Serial1.begin(1000000, SERIAL_8N1, RX, TX);  // UART at 1Mbps
+  st.pSerial = &Serial1;
+  delay(1000);
+  st.WritePosEx(SERVO_ID, 0, 0, 20);
+  Serial.println("Position : 0");
+
+  delay(5000);
+  Serial.println("Servo is ready!");
 
   
-  
+        generateServoPositions(numRanges);
+
 }
+int simulateMoto3RPM() {
+  static unsigned long lastUpdate = 0;
+  static int rpm = 6000;
+  static int direction = 1;
+
+  unsigned long now = millis();
+  
+  // Only update every 100ms
+  if (now - lastUpdate > 100) {
+    lastUpdate = now;
+
+    // Random acceleration/braking behavior
+    int change = random(200, 800) * direction;
+    rpm += change;
+
+    // Reverse direction randomly (simulate gear shifts or throttle/brake)
+    if (random(0, 10) > 7) {
+      direction *= -1;
+    }
+
+    // Clamp RPM between realistic Moto3 limits
+    rpm = constrain(rpm, 6000, 14000);
+  }
+
+  return rpm;
+}
+
 void diagnosticsMode() {
   printOnceDisable=false;
   if(!printOnceEnable){
     enableWiFi();
     printOnceEnable= true;
   }
-    rpm ++;
-    mode = determineMode(rpm);
-    st.WritePosEx(SERVO_ID, modeServoPositions[mode-1], 0, 20);  // Move to 360° (full rotation)
+    server.handleClient();
 
+    rpm = simulateMoto3RPM();
+
+    mode = determineMode(rpm);
+    if(lastMode != mode){
+      st.WritePosEx(SERVO_ID, modeServoPositions[mode-1], 0, 100);  // Move to 360° (full rotation)
+      Serial.println(modeServoPositions[mode-1]);
+      delay(500);
+    }
+    lastMode = mode;
     yield();  // Prevent watchdog timer reset
 
 }
