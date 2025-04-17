@@ -294,10 +294,15 @@ void handleTestResult() {
 
   // Generate the pattern [1, 2, 3, 4, 3, 2, 1]
   for (int i = 1; i <= numRanges; i++) {
-    st.WritePosEx(SERVO_ID, modeServoPositions[mode-1], 0, 20);  // Move to 360° (full rotation)
+    modePath.add(i); // Add descending values: 3, 2, 1
+    st.WritePosEx(SERVO_ID, modeServoPositions[i-1], 0, 20);  // Move to 360° (full rotation)
+    delay(400);
   }
   for (int i = numRanges - 1; i >= 1; i--) {
+    
     modePath.add(i); // Add descending values: 3, 2, 1
+    st.WritePosEx(SERVO_ID, modeServoPositions[i-1], 0, 20);
+    delay(400);
   }
 
   // Serialize the JSON document to a string
@@ -333,6 +338,7 @@ void handleTestCheck() {
       testCheck = doc["test_check"];
       Serial.print("Received test_check: ");
       Serial.println(testCheck);
+      
     }
 
     server.send(200, "text/plain", "Test check updated successfully");
@@ -410,6 +416,7 @@ void setup() {
   // Configure HTTP routes
   server.on("/data", HTTP_GET, handleRPMData);          // Send RPM data
   server.on("/test_result", HTTP_GET, handleTestResult);  // Send Test Results
+  
   server.on("/current_position",HTTP_GET ,  sendCurrentMode);
   server.on("/save_test_check", HTTP_POST, handleTestCheck); // Receive test_check flag as boolean value
   server.on("/save_ranges", HTTP_POST, handleRanges); // Receive ranges for modes
@@ -469,15 +476,19 @@ void diagnosticsMode() {
   }
     server.handleClient();
 
-    rpm = simulateMoto3RPM();
+    if(!testCheck){
+      rpm = simulateMoto3RPM();
 
-    mode = determineMode(rpm);
-    if(lastMode != mode){
-      st.WritePosEx(SERVO_ID, modeServoPositions[mode-1], 0, 100);  // Move to 360° (full rotation)
-      Serial.println(modeServoPositions[mode-1]);
-      delay(500);
+      mode = determineMode(rpm);
+      if(lastMode != mode){
+        st.WritePosEx(SERVO_ID, modeServoPositions[mode-1], 0, 100);  // Move to 360° (full rotation)
+        Serial.print("Servo position: ");
+        Serial.println(modeServoPositions[mode-1]);
+        
+        delay(500);
+      }
+      lastMode = mode;
     }
-    lastMode = mode;
     yield();  // Prevent watchdog timer reset
 
 }
@@ -525,7 +536,7 @@ void loop() {
     {
       raceMode();
     }
-    Serial.println(status ? "WiFi is ON (SSID visible)" : "WiFi is OFF (hidden)");
+    // Serial.println(status ? "WiFi is ON (SSID visible)" : "WiFi is OFF (hidden)");
 
   //random rpm values to check fetching rpm,determine the mode we are at that moment,etc.(testing...)
  
