@@ -299,55 +299,47 @@ void handleRPMData() {
 
 
 void handleTargetPosition() {
-  // Allocate a buffer for incoming JSON (adjust size as needed)
+  // Buffer for incoming JSON
   DynamicJsonDocument doc(256);
 
-  // Parse the incoming JSON body from the client
+  // Parse the JSON from the client
   DeserializationError error = deserializeJson(doc, server.arg("plain"));
   if (error) {
     server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
     return;
   }
 
-  // Check if "targetPosition" key exists
-  if (!doc.containsKey("targetPosition")) {
-    server.send(400, "application/json", "{\"error\":\"Missing 'targetPosition'\"}");
+  // Check for valid "targetMode" key
+  if (!doc.containsKey("targetMode") || !doc["targetMode"].is<int>()) {
+    server.send(400, "application/json", "{\"error\":\"Missing or invalid 'targetMode'\"}");
     return;
   }
 
-  int targetMode = doc["targetPosition"];
+  int targetMode = doc["targetMode"];
+  targetMode = constrain(targetMode, 1, numRanges);  // Clamp to valid range
 
-  // Optional: clamp the target range
-  targetMode = constrain(targetMode, 1, numRanges);  // Adjust based on your mode limits
-
-  // JSON response
+  // Prepare response JSON
   DynamicJsonDocument response(256);
   JsonArray modePath = response.createNestedArray("mode_path");
 
-  extern int mode;  // Make sure this reflects current mode
-  if (targetMode > mode) {
-    for (int i = mode; i <= targetMode; i++) {
-      modePath.add(i);
-      st.WritePosEx(SERVO_ID, modeServoPositions[i - 1], 0, 20);
-      delay(2000);
-    }
-  } else {
-    for (int i = mode; i >= targetMode; i--) {
-      modePath.add(i);
-      st.WritePosEx(SERVO_ID, modeServoPositions[i - 1], 0, 20);
-      delay(2000);
-    }
+  // Move step-by-step to targetMode
+  int step = (targetMode > mode) ? 1 : -1;
+  for (int i = mode; i != targetMode + step; i += step) {
+    modePath.add(i);
+    st.WritePosEx(SERVO_ID, modeServoPositions[i - 1], 0, 20);
+    delay(2000);  // Optional: adjust delay
   }
 
   // Update current mode
   mode = targetMode;
 
-  // Send JSON response
+  // Send response
   String jsonData;
   serializeJson(response, jsonData);
   Serial.println("Sending mode path: " + jsonData);
   server.send(200, "application/json", jsonData);
 }
+
 
 
 // HTTP handler to send test result (if test_check is true)
@@ -484,7 +476,7 @@ void setup() {
 
   server.on("/current_position",HTTP_GET ,  sendCurrentMode);
   server.on("/save_test_check", HTTP_POST, handleTestCheck); // Receive test_check flag as boolean value
-  server.on("/receive_target_position", HTTP_GET, handleTargetPosition);  // Send Test Results
+server.on("/receive_target_position", HTTP_POST, handleTargetPosition);  // Receive target mode from client
   
   server.on("/save_ranges", HTTP_POST, handleRanges); // Receive ranges for modes
   server.on("/sync", HTTP_POST, handleSync); // Send sync status (boolean)
